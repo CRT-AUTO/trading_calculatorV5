@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Always on top styles */
+body.always-on-top {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9999;
+}
+
+/* Makes Picture-in-Picture window always visible */
+:root {
+  --pip-width: 320px;
+  --pip-height: 240px;
+}
+
+video::-webkit-media-controls,
+video::-webkit-media-controls-overlay-play-button {
+  display: none;
+}
+
+@media (display-mode: picture-in-picture) {
+  body {
+    background-color: #1f2937;
+    width: 100vw;
+    height: 100vh;
+    overflow: auto;
+  }
+  
+  #pip-window {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+  }
+}
+
+/* Make fonts and UI more compact for PiP mode */
+@media (max-width: 640px), (display-mode: picture-in-picture) {
+  .text-sm {
+    font-size: 0.75rem;
+  }
+  
+  .text-xs {
+    font-size: 0.7rem;
+  }
+  
+  input, select, button {
+    padding-top: 0.25rem;
+    padding-bottom: 0.25rem;
+  }
+}
