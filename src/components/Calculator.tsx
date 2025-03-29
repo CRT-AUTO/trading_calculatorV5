@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Copy, ArrowUp } from 'lucide-react';
+import { Copy, ArrowUp, GripVertical } from 'lucide-react';
 
 interface CalculatorProps {
   livePrice: string;
@@ -34,6 +34,13 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
   
   // State for always-on-top feature
   const [isAlwaysOnTop, setIsAlwaysOnTop] = useState<boolean>(false);
+  
+  // Refs for draggable floating window
+  const floatingWindowRef = useRef<HTMLDivElement>(null);
+  const dragHandleRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef<boolean>(false);
+  const offsetXRef = useRef<number>(0);
+  const offsetYRef = useRef<number>(0);
 
   // Reference to calculate function for use in useEffect
   const calculateRef = useRef<() => void>();
@@ -102,30 +109,66 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
     isAlwaysOnTop,
   ]);
 
-  // Set up always-on-top functionality using picture-in-picture when available
+  // Set up draggable functionality for floating window
   useEffect(() => {
-    // Check if the document has pictureInPictureEnabled
-    const pipWindow = document.getElementById('pip-window');
-    if (isAlwaysOnTop && pipWindow && document.pictureInPictureEnabled) {
-      try {
-        // Request picture in picture mode
-        if (document.pictureInPictureElement !== pipWindow) {
-          // @ts-ignore - TypeScript might not recognize the method
-          pipWindow.requestPictureInPicture();
-        }
-      } catch (error) {
-        console.error('Picture-in-Picture failed:', error);
-      }
-    } else if (!isAlwaysOnTop && document.pictureInPictureElement) {
-      document.exitPictureInPicture().catch(console.error);
-    }
+    const dragHandle = dragHandleRef.current;
+    const floatingWindow = floatingWindowRef.current;
+    
+    if (!dragHandle || !floatingWindow) return;
 
-    // Apply basic CSS-based always-on-top behavior as fallback
-    if (isAlwaysOnTop) {
-      document.body.classList.add('always-on-top');
-      window.scrollTo(0, 0);
-    } else {
-      document.body.classList.remove('always-on-top');
+    const handleMouseDown = (e: MouseEvent) => {
+      isDraggingRef.current = true;
+      offsetXRef.current = e.clientX - floatingWindow.getBoundingClientRect().left;
+      offsetYRef.current = e.clientY - floatingWindow.getBoundingClientRect().top;
+    };
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      
+      const left = e.clientX - offsetXRef.current;
+      const top = e.clientY - offsetYRef.current;
+      
+      // Keep window within viewport bounds
+      const maxX = window.innerWidth - floatingWindow.offsetWidth;
+      const maxY = window.innerHeight - floatingWindow.offsetHeight;
+      
+      floatingWindow.style.left = `${Math.max(0, Math.min(left, maxX))}px`;
+      floatingWindow.style.top = `${Math.max(0, Math.min(top, maxY))}px`;
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+    };
+
+    dragHandle.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      dragHandle.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isAlwaysOnTop]);
+
+  // Apply floating window class when always on top is enabled
+  useEffect(() => {
+    const calculatorElement = document.getElementById('calculator-container');
+    if (calculatorElement) {
+      if (isAlwaysOnTop) {
+        calculatorElement.classList.add('floating-calculator');
+        
+        // Set initial position if not already positioned
+        if (!calculatorElement.style.top && !calculatorElement.style.left) {
+          calculatorElement.style.top = '20px';
+          calculatorElement.style.right = '20px';
+        }
+      } else {
+        calculatorElement.classList.remove('floating-calculator');
+        calculatorElement.style.top = '';
+        calculatorElement.style.left = '';
+        calculatorElement.style.right = '';
+      }
     }
   }, [isAlwaysOnTop]);
 
@@ -289,7 +332,25 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
   };
 
   return (
-    <div id="pip-window">
+    <div id="calculator-container" ref={floatingWindowRef}>
+      {isAlwaysOnTop && (
+        <div 
+          ref={dragHandleRef}
+          className="draggable-handle bg-gray-700 p-1 flex items-center justify-between rounded-t-lg border-b border-gray-600"
+        >
+          <div className="flex items-center">
+            <GripVertical size={14} className="mr-2 text-gray-400" />
+            <span className="text-xs text-gray-300">Drag to move</span>
+          </div>
+          <button
+            onClick={toggleAlwaysOnTop}
+            className="text-gray-400 hover:text-white p-1 rounded"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <h2 className="text-md font-semibold mb-2">Trade Parameters</h2>
@@ -462,7 +523,7 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
                   }`}
                 >
                   <ArrowUp size={12} className="mr-1" />
-                  {isAlwaysOnTop ? 'Disable PiP' : 'Enable PiP'}
+                  {isAlwaysOnTop ? 'Disable Float' : 'Enable Float'}
                 </button>
               </div>
             </div>
