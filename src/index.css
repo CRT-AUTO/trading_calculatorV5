@@ -3,13 +3,47 @@
 @tailwind utilities;
 
 /* Always on top styles */
-body.always-on-top {
+.floating-calculator {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  top: 20px;
+  right: 20px;
   z-index: 9999;
+  width: 400px;
+  max-width: 95vw;
+  background-color: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+  overflow: auto;
+  resize: both;
+  max-height: 90vh;
+  transition: all 0.2s ease;
+}
+
+.floating-calculator:hover {
+  box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.7);
+}
+
+.floating-calculator .draggable-handle {
+  cursor: move;
+  user-select: none;
+}
+
+/* Compact mode for floating window */
+.floating-calculator input,
+.floating-calculator select,
+.floating-calculator button {
+  font-size: 0.75rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+
+.floating-calculator .text-sm {
+  font-size: 0.75rem;
+}
+
+.floating-calculator .text-xs {
+  font-size: 0.7rem;
 }
 
 /* Makes Picture-in-Picture window always visible */
