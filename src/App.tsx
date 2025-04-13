@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Calculator } from './components/Calculator';
 import { CryptoDropdown } from './components/CryptoDropdown';
-import { ArrowDownUp } from 'lucide-react';
+import { ArrowDownUp, Star } from 'lucide-react';
 
 function App() {
   const [livePrice, setLivePrice] = useState<string>('');
@@ -9,6 +9,20 @@ function App() {
   const [useLivePrice, setUseLivePrice] = useState<boolean>(true);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [favoriteCryptos, setFavoriteCryptos] = useState<string[]>([]);
+
+  // Load favorite cryptos from localStorage
+  useEffect(() => {
+    const savedFavorites = localStorage.getItem('favoriteCryptos');
+    if (savedFavorites) {
+      setFavoriteCryptos(JSON.parse(savedFavorites));
+    }
+  }, []);
+
+  // Save favorite cryptos to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('favoriteCryptos', JSON.stringify(favoriteCryptos));
+  }, [favoriteCryptos]);
 
   const fetchPrice = async (symbol: string) => {
     if (!useLivePrice) return;
@@ -62,6 +76,43 @@ function App() {
     fetchPrice(crypto);
   };
 
+  const toggleFavorite = (crypto: string) => {
+    if (favoriteCryptos.includes(crypto)) {
+      // Remove from favorites
+      setFavoriteCryptos(prevFavorites => 
+        prevFavorites.filter(fav => fav !== crypto)
+      );
+    } else {
+      // Add to favorites (limit to 3)
+      if (favoriteCryptos.length < 3) {
+        setFavoriteCryptos(prevFavorites => [...prevFavorites, crypto]);
+      } else {
+        // If we already have 3 favorites, replace the oldest one
+        setFavoriteCryptos(prevFavorites => [...prevFavorites.slice(1), crypto]);
+      }
+    }
+  };
+
+  // Get crypto name from symbol
+  const getCryptoNameFromSymbol = (symbol: string): string => {
+    // Most common cryptos
+    if (symbol === 'BTCUSDT') return 'BTC';
+    if (symbol === 'ETHUSDT') return 'ETH';
+    if (symbol === 'SOLUSDT') return 'SOL';
+    if (symbol === 'BNBUSDT') return 'BNB';
+    if (symbol === 'XRPUSDT') return 'XRP';
+    if (symbol === 'ADAUSDT') return 'ADA';
+    if (symbol === 'DOGEUSDT') return 'DOGE';
+    if (symbol === 'DOTUSDT') return 'DOT';
+    // Perpetual markets
+    if (symbol === 'BTCUSDTPERP') return 'BTC/P';
+    if (symbol === 'ETHUSDTPERP') return 'ETH/P';
+    if (symbol === 'SOLUSDTPERP') return 'SOL/P';
+    
+    // Default fallback - just show the first 3-4 characters
+    return symbol.substring(0, 4);
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       <div className="container mx-auto px-2 py-4">
@@ -74,11 +125,35 @@ function App() {
         </header>
         
         <div className="bg-gray-800 rounded-lg shadow-lg p-4 max-w-2xl mx-auto">
+          {/* Favorite Cryptos Quick Buttons */}
+          {favoriteCryptos.length > 0 && (
+            <div className="flex flex-wrap gap-2 mb-4 border-b border-gray-700 pb-3">
+              <span className="text-xs text-gray-400 flex items-center mr-1">
+                <Star size={12} className="mr-1 text-yellow-400"/> Favorites:
+              </span>
+              {favoriteCryptos.map(crypto => (
+                <button
+                  key={crypto}
+                  onClick={() => handleCryptoChange(crypto)}
+                  className={`px-3 py-1 text-xs font-medium rounded-full transition-colors ${
+                    selectedCrypto === crypto 
+                      ? 'bg-blue-600 text-white' 
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  {getCryptoNameFromSymbol(crypto)}
+                </button>
+              ))}
+            </div>
+          )}
+          
           <div className="mb-4 flex flex-col md:flex-row items-start md:items-center gap-3">
             <div className="w-full md:w-auto">
               <CryptoDropdown 
                 selectedCrypto={selectedCrypto} 
-                onCryptoChange={handleCryptoChange} 
+                onCryptoChange={handleCryptoChange}
+                favoriteCryptos={favoriteCryptos}
+                onToggleFavorite={toggleFavorite} 
               />
             </div>
             
@@ -108,7 +183,11 @@ function App() {
             )}
           </div>
           
-          <Calculator livePrice={useLivePrice ? livePrice : ''} />
+          <Calculator 
+            livePrice={useLivePrice ? livePrice : ''} 
+            selectedCrypto={selectedCrypto}
+            webhookUrl="https://hook.eu2.make.com/9hd3b1rhn57p84u6a78cgyr993b5pl8u"
+          />
         </div>
       </div>
     </div>
