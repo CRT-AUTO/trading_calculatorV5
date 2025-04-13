@@ -798,25 +798,6 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
                   Compound
                 </button>
               )}
-              
-              <button
-                onClick={saveToJournal}
-                disabled={!positionSizeAfterFees || webhookStatus.loading}
-                className={`flex items-center justify-center py-2 px-3 text-sm font-medium rounded-md transition duration-200 focus:outline-none ${
-                  !positionSizeAfterFees || webhookStatus.loading
-                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                    : 'bg-green-600 hover:bg-green-700 text-white'
-                }`}
-              >
-                {webhookStatus.loading ? (
-                  <span className="inline-block animate-spin rounded-full h-4 w-4 border-t-2 border-white border-opacity-50"></span>
-                ) : (
-                  <>
-                    <Save size={14} className="mr-1" />
-                    Add to Journal
-                  </>
-                )}
-              </button>
             </div>
             
             {/* Webhook status message */}
@@ -978,6 +959,26 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
               setEntryPicUrl={setEntryPicUrl}
               isDisabled={!positionSizeAfterFees}
             />
+            
+            {/* Add to Journal button */}
+            <button
+              onClick={saveToJournal}
+              disabled={!positionSizeAfterFees || webhookStatus.loading}
+              className={`w-full flex items-center justify-center py-2 px-3 text-sm font-medium rounded-md transition duration-200 focus:outline-none ${
+                !positionSizeAfterFees || webhookStatus.loading
+                  ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                  : 'bg-green-600 hover:bg-green-700 text-white'
+              }`}
+            >
+              {webhookStatus.loading ? (
+                <span className="inline-block animate-spin rounded-full h-4 w-4 border-t-2 border-white border-opacity-50"></span>
+              ) : (
+                <>
+                  <Save size={14} className="mr-1" />
+                  Add to Journal
+                </>
+              )}
+            </button>
           </div>
         </div>
       </div>
