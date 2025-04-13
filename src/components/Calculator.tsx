@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Copy, ArrowUp, GripVertical } from 'lucide-react';
+import { Copy, Save } from 'lucide-react';
 
 interface CalculatorProps {
   livePrice: string;
+  selectedCrypto: string;
+  webhookUrl: string;
 }
 
-export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
+export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypto, webhookUrl }) => {
   // State for form inputs
   const [entryPrice, setEntryPrice] = useState<string>('');
   const [stopLossPrice, setStopLossPrice] = useState<string>('');
@@ -32,15 +34,16 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
   const [calculationError, setCalculationError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<string | null>(null);
   
-  // State for always-on-top feature
-  const [isAlwaysOnTop, setIsAlwaysOnTop] = useState<boolean>(false);
-  
-  // Refs for draggable floating window
-  const floatingWindowRef = useRef<HTMLDivElement>(null);
-  const dragHandleRef = useRef<HTMLDivElement>(null);
-  const isDraggingRef = useRef<boolean>(false);
-  const offsetXRef = useRef<number>(0);
-  const offsetYRef = useRef<number>(0);
+  // State for webhook success/error
+  const [webhookStatus, setWebhookStatus] = useState<{
+    loading: boolean;
+    success: boolean;
+    error: string | null;
+  }>({
+    loading: false,
+    success: false,
+    error: null
+  });
 
   // Reference to calculate function for use in useEffect
   const calculateRef = useRef<() => void>();
@@ -59,7 +62,6 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
       setIsLimitExit(settings.isLimitExit || false);
       setAvailableCapital(settings.availableCapital || '1000');
       setDecimalPlaces(settings.decimalPlaces || 2);
-      setIsAlwaysOnTop(settings.isAlwaysOnTop || false);
     }
   }, []);
 
@@ -93,7 +95,6 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
       isLimitExit,
       availableCapital,
       decimalPlaces,
-      isAlwaysOnTop,
     };
     localStorage.setItem('tradingCalculatorSettings', JSON.stringify(settings));
   }, [
@@ -106,71 +107,7 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
     isLimitExit,
     availableCapital,
     decimalPlaces,
-    isAlwaysOnTop,
   ]);
-
-  // Set up draggable functionality for floating window
-  useEffect(() => {
-    const dragHandle = dragHandleRef.current;
-    const floatingWindow = floatingWindowRef.current;
-    
-    if (!dragHandle || !floatingWindow) return;
-
-    const handleMouseDown = (e: MouseEvent) => {
-      isDraggingRef.current = true;
-      offsetXRef.current = e.clientX - floatingWindow.getBoundingClientRect().left;
-      offsetYRef.current = e.clientY - floatingWindow.getBoundingClientRect().top;
-    };
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDraggingRef.current) return;
-      
-      const left = e.clientX - offsetXRef.current;
-      const top = e.clientY - offsetYRef.current;
-      
-      // Keep window within viewport bounds
-      const maxX = window.innerWidth - floatingWindow.offsetWidth;
-      const maxY = window.innerHeight - floatingWindow.offsetHeight;
-      
-      floatingWindow.style.left = `${Math.max(0, Math.min(left, maxX))}px`;
-      floatingWindow.style.top = `${Math.max(0, Math.min(top, maxY))}px`;
-    };
-
-    const handleMouseUp = () => {
-      isDraggingRef.current = false;
-    };
-
-    dragHandle.addEventListener('mousedown', handleMouseDown);
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      dragHandle.removeEventListener('mousedown', handleMouseDown);
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isAlwaysOnTop]);
-
-  // Apply floating window class when always on top is enabled
-  useEffect(() => {
-    const calculatorElement = document.getElementById('calculator-container');
-    if (calculatorElement) {
-      if (isAlwaysOnTop) {
-        calculatorElement.classList.add('floating-calculator');
-        
-        // Set initial position if not already positioned
-        if (!calculatorElement.style.top && !calculatorElement.style.left) {
-          calculatorElement.style.top = '20px';
-          calculatorElement.style.right = '20px';
-        }
-      } else {
-        calculatorElement.classList.remove('floating-calculator');
-        calculatorElement.style.top = '';
-        calculatorElement.style.left = '';
-        calculatorElement.style.right = '';
-      }
-    }
-  }, [isAlwaysOnTop]);
 
   const handleMarketEntryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setIsMarketEntry(e.target.checked);
@@ -326,295 +263,385 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice }) => {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
   };
-
-  const toggleAlwaysOnTop = () => {
-    setIsAlwaysOnTop(!isAlwaysOnTop);
+  
+  // Function to send trade data to webhook
+  const saveToJournal = async () => {
+    // Validate that we have calculation results
+    if (!positionSizeAfterFees || !entryPrice || !stopLossPrice) {
+      setWebhookStatus({
+        loading: false,
+        success: false,
+        error: 'Please calculate the position first'
+      });
+      return;
+    }
+    
+    setWebhookStatus({
+      loading: true,
+      success: false,
+      error: null
+    });
+    
+    // Determine if long or short
+    const isLong = parseFloat(entryPrice) < parseFloat(stopLossPrice);
+    
+    // Prepare data for webhook
+    const tradeData = {
+      symbol: selectedCrypto,
+      entryPrice: parseFloat(entryPrice),
+      stopLossPrice: parseFloat(stopLossPrice),
+      positionSize: parseFloat(positionSizeAfterFees),
+      riskAmount: parseFloat(riskAmount),
+      leverage: parseFloat(leverageNeeded),
+      direction: isLong ? 'LONG' : 'SHORT',
+      feeCost: parseFloat(feeCost),
+      liquidationPrice: parseFloat(liquidationPrice),
+      timestamp: new Date().toISOString(),
+      isMarketEntry: isMarketEntry,
+      isLimitEntry: isLimitEntry,
+      isMarketExit: isMarketExit,
+      isLimitExit: isLimitExit
+    };
+    
+    try {
+      const response = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(tradeData),
+      });
+      
+      if (response.ok) {
+        setWebhookStatus({
+          loading: false,
+          success: true,
+          error: null
+        });
+        
+        // Reset success message after 3 seconds
+        setTimeout(() => {
+          setWebhookStatus(prev => ({
+            ...prev,
+            success: false
+          }));
+        }, 3000);
+      } else {
+        const errorText = await response.text();
+        setWebhookStatus({
+          loading: false,
+          success: false,
+          error: `Error: ${response.status} - ${errorText}`
+        });
+      }
+    } catch (error) {
+      setWebhookStatus({
+        loading: false,
+        success: false,
+        error: `Error: ${(error as Error).message}`
+      });
+    }
   };
 
   return (
-    <div id="calculator-container" ref={floatingWindowRef}>
-      {isAlwaysOnTop && (
-        <div 
-          ref={dragHandleRef}
-          className="draggable-handle bg-gray-700 p-1 flex items-center justify-between rounded-t-lg border-b border-gray-600"
-        >
-          <div className="flex items-center">
-            <GripVertical size={14} className="mr-2 text-gray-400" />
-            <span className="text-xs text-gray-300">Drag to move</span>
-          </div>
-          <button
-            onClick={toggleAlwaysOnTop}
-            className="text-gray-400 hover:text-white p-1 rounded"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <h2 className="text-md font-semibold mb-2">Trade Parameters</h2>
-          
-          <div className="space-y-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-300 mb-1">
-                Entry Price
-              </label>
-              <input
-                type="text"
-                value={entryPrice}
-                onChange={handleEntryPriceChange}
-                className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                placeholder="Enter price"
-              />
-            </div>
+    <div>
+      <div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Left side: Input fields */}
+          <div className="space-y-4">
+            <h2 className="text-md font-semibold mb-2">Trade Parameters</h2>
             
-            <div>
-              <label className="block text-xs font-medium text-gray-300 mb-1">
-                Stop Loss Price
-              </label>
-              <input
-                type="text"
-                value={stopLossPrice}
-                onChange={handleStopLossChange}
-                className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                placeholder="Stop loss price"
-              />
-            </div>
-            
-            <div>
-              <label className="block text-xs font-medium text-gray-300 mb-1">
-                Risk Amount (USDT)
-              </label>
-              <input
-                type="text"
-                value={riskAmount}
-                onChange={(e) => setRiskAmount(e.target.value)}
-                className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                placeholder="Amount to risk"
-              />
-            </div>
-            
-            <div>
-              <label className="block text-xs font-medium text-gray-300 mb-1">
-                Available Capital (USDT)
-              </label>
-              <input
-                type="text"
-                value={availableCapital}
-                onChange={(e) => setAvailableCapital(e.target.value)}
-                className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                placeholder="Available capital"
-              />
-            </div>
-          </div>
-        </div>
-        
-        <div>
-          <h2 className="text-md font-semibold mb-2">Fee Settings</h2>
-          
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-3">
               <div>
                 <label className="block text-xs font-medium text-gray-300 mb-1">
-                  Taker Fee (%)
+                  Entry Price
                 </label>
                 <input
                   type="text"
-                  value={marketFee}
-                  onChange={(e) => setMarketFee(e.target.value)}
+                  value={entryPrice}
+                  onChange={handleEntryPriceChange}
                   className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  placeholder="Market fee %"
+                  placeholder="Enter price"
                 />
               </div>
               
               <div>
                 <label className="block text-xs font-medium text-gray-300 mb-1">
-                  Maker Fee (%)
+                  Stop Loss Price
                 </label>
                 <input
                   type="text"
-                  value={limitFee}
-                  onChange={(e) => setLimitFee(e.target.value)}
+                  value={stopLossPrice}
+                  onChange={handleStopLossChange}
                   className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  placeholder="Limit fee %"
+                  placeholder="Stop loss price"
                 />
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-300 mb-1">
-                  Entry Fee Type
-                </label>
-                <div className="flex space-x-3">
-                  <label className="inline-flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={isMarketEntry}
-                      onChange={handleMarketEntryChange}
-                      className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
-                    />
-                    <span className="ml-1 text-xs text-gray-300">Taker</span>
-                  </label>
-                  
-                  <label className="inline-flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={isLimitEntry}
-                      onChange={handleLimitEntryChange}
-                      className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
-                    />
-                    <span className="ml-1 text-xs text-gray-300">Maker</span>
-                  </label>
-                </div>
               </div>
               
               <div>
                 <label className="block text-xs font-medium text-gray-300 mb-1">
-                  Exit Fee Type
-                </label>
-                <div className="flex space-x-3">
-                  <label className="inline-flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={isMarketExit}
-                      onChange={handleMarketExitChange}
-                      className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
-                    />
-                    <span className="ml-1 text-xs text-gray-300">Taker</span>
-                  </label>
-                  
-                  <label className="inline-flex items-center">
-                    <input
-                      type="checkbox"
-                      checked={isLimitExit}
-                      onChange={handleLimitExitChange}
-                      className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
-                    />
-                    <span className="ml-1 text-xs text-gray-300">Maker</span>
-                  </label>
-                </div>
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-300 mb-1">
-                  Decimal Places
+                  Risk Amount (USDT)
                 </label>
                 <input
-                  type="number"
-                  min="0"
-                  max="8"
-                  value={decimalPlaces}
-                  onChange={(e) => setDecimalPlaces(parseInt(e.target.value))}
+                  type="text"
+                  value={riskAmount}
+                  onChange={(e) => setRiskAmount(e.target.value)}
                   className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  placeholder="Amount to risk"
                 />
               </div>
               
-              <div className="flex items-end">
-                <button
-                  onClick={toggleAlwaysOnTop}
-                  className={`flex items-center px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                    isAlwaysOnTop 
-                      ? 'bg-blue-600 text-white hover:bg-blue-700' 
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                >
-                  <ArrowUp size={12} className="mr-1" />
-                  {isAlwaysOnTop ? 'Disable Float' : 'Enable Float'}
-                </button>
+              <div>
+                <label className="block text-xs font-medium text-gray-300 mb-1">
+                  Available Capital (USDT)
+                </label>
+                <input
+                  type="text"
+                  value={availableCapital}
+                  onChange={(e) => setAvailableCapital(e.target.value)}
+                  className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  placeholder="Available capital"
+                />
               </div>
             </div>
+            
+            <h2 className="text-md font-semibold mb-2">Fee Settings</h2>
+            
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-300 mb-1">
+                    Taker Fee (%)
+                  </label>
+                  <input
+                    type="text"
+                    value={marketFee}
+                    onChange={(e) => setMarketFee(e.target.value)}
+                    className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    placeholder="Market fee %"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-xs font-medium text-gray-300 mb-1">
+                    Maker Fee (%)
+                  </label>
+                  <input
+                    type="text"
+                    value={limitFee}
+                    onChange={(e) => setLimitFee(e.target.value)}
+                    className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    placeholder="Limit fee %"
+                  />
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-300 mb-1">
+                    Entry Fee Type
+                  </label>
+                  <div className="flex space-x-3">
+                    <label className="inline-flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={isMarketEntry}
+                        onChange={handleMarketEntryChange}
+                        className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
+                      />
+                      <span className="ml-1 text-xs text-gray-300">Taker</span>
+                    </label>
+                    
+                    <label className="inline-flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={isLimitEntry}
+                        onChange={handleLimitEntryChange}
+                        className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
+                      />
+                      <span className="ml-1 text-xs text-gray-300">Maker</span>
+                    </label>
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="block text-xs font-medium text-gray-300 mb-1">
+                    Exit Fee Type
+                  </label>
+                  <div className="flex space-x-3">
+                    <label className="inline-flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={isMarketExit}
+                        onChange={handleMarketExitChange}
+                        className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
+                      />
+                      <span className="ml-1 text-xs text-gray-300">Taker</span>
+                    </label>
+                    
+                    <label className="inline-flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={isLimitExit}
+                        onChange={handleLimitExitChange}
+                        className="h-3 w-3 rounded border-gray-600 text-blue-500 focus:ring-blue-500"
+                      />
+                      <span className="ml-1 text-xs text-gray-300">Maker</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-300 mb-1">
+                    Decimal Places
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="8"
+                    value={decimalPlaces}
+                    onChange={(e) => setDecimalPlaces(parseInt(e.target.value))}
+                    className="w-full px-2 py-1 text-sm bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+              </div>
+            </div>
+            
+            <div className="mt-4 flex gap-2">
+              <button
+                onClick={calculate}
+                className="flex-1 py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition duration-200 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-gray-800"
+              >
+                Calculate
+              </button>
+              
+              <button
+                onClick={saveToJournal}
+                disabled={!positionSizeAfterFees || webhookStatus.loading}
+                className={`flex items-center justify-center py-2 px-3 text-sm font-medium rounded-md transition duration-200 focus:outline-none ${
+                  !positionSizeAfterFees || webhookStatus.loading
+                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                    : 'bg-green-600 hover:bg-green-700 text-white'
+                }`}
+              >
+                {webhookStatus.loading ? (
+                  <span className="inline-block animate-spin rounded-full h-4 w-4 border-t-2 border-white border-opacity-50"></span>
+                ) : (
+                  <>
+                    <Save size={14} className="mr-1" />
+                    Add to Journal
+                  </>
+                )}
+              </button>
+            </div>
+            
+            {/* Webhook status message */}
+            {webhookStatus.success && (
+              <div className="p-2 bg-green-900/50 border border-green-700 rounded-md text-green-200 text-xs">
+                Trade successfully added to journal!
+              </div>
+            )}
+            
+            {webhookStatus.error && (
+              <div className="p-2 bg-red-900/50 border border-red-700 rounded-md text-red-200 text-xs">
+                {webhookStatus.error}
+              </div>
+            )}
+            
+            {calculationError && (
+              <div className="p-2 bg-red-900/50 border border-red-700 rounded-md text-red-200 text-xs">
+                {calculationError}
+              </div>
+            )}
+          </div>
+          
+          {/* Right side: Results */}
+          <div className="space-y-4">
+            {positionSizeAfterFees && !calculationError ? (
+              <div className="bg-gray-700/50 border border-gray-600 rounded-lg p-3 h-full">
+                <h2 className="text-md font-semibold mb-3">Results</h2>
+                
+                <div className="space-y-3">
+                  {/* Position Size Post-Fees (Highlighted) */}
+                  <div className="flex justify-between items-center p-3 bg-blue-900/30 border border-blue-700/50 rounded-md">
+                    <span className="text-blue-200 font-medium">Size Post-Fees:</span>
+                    <div className="flex items-center">
+                      <span className="text-lg font-bold text-white">{positionSizeAfterFees}</span>
+                      <button 
+                        onClick={() => copyToClipboard(positionSizeAfterFees)}
+                        className="ml-1 text-gray-400 hover:text-white"
+                      >
+                        <Copy size={14} />
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {/* Other results */}
+                  <div className="grid grid-cols-1 gap-2 text-sm">
+                    <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
+                      <span className="text-gray-300 text-xs">Size Pre-Fees:</span>
+                      <div className="flex items-center">
+                        <span className="font-medium">{positionSizeBeforeFees}</span>
+                        <button 
+                          onClick={() => copyToClipboard(positionSizeBeforeFees)}
+                          className="ml-1 text-gray-400 hover:text-white"
+                        >
+                          <Copy size={12} />
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
+                      <span className="text-gray-300 text-xs">Leverage:</span>
+                      <span className="font-medium">{leverageNeeded}x</span>
+                    </div>
+                    
+                    <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
+                      <span className="text-gray-300 text-xs">Total Fees:</span>
+                      <span className="font-medium">{feeCost} USDT</span>
+                    </div>
+                    
+                    <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
+                      <span className="text-gray-300 text-xs">Max Risk:</span>
+                      <div className="flex items-center">
+                        <span className="font-medium">{maxRisk} USDT</span>
+                        <button 
+                          onClick={() => copyToClipboard(maxRisk)}
+                          className="ml-1 text-gray-400 hover:text-white"
+                        >
+                          <Copy size={12} />
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
+                      <span className="text-gray-300 text-xs">Liquidation:</span>
+                      <span className={`font-medium ${isLiquidationRisky ? 'text-red-400' : 'text-green-400'}`}>
+                        {liquidationPrice}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {isLiquidationRisky && (
+                    <div className="mt-3 p-2 bg-red-900/50 border border-red-700 rounded-md text-red-200 text-xs">
+                      Warning: Liquidation before stop loss!
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-full bg-gray-700/20 border border-gray-700 border-dashed rounded-lg p-6">
+                <div className="text-center text-gray-500">
+                  <p className="mb-2">Enter trade details and click Calculate</p>
+                  <p className="text-xs">Results will appear here</p>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
-      
-      <div className="mt-4">
-        <button
-          onClick={calculate}
-          className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition duration-200 focus:outline-none focus:ring-1 focus:ring-blue-500 focus:ring-offset-1 focus:ring-offset-gray-800"
-        >
-          Calculate
-        </button>
-      </div>
-      
-      {calculationError && (
-        <div className="mt-3 p-2 bg-red-900/50 border border-red-700 rounded-md text-red-200 text-xs">
-          {calculationError}
-        </div>
-      )}
-      
-      {positionSizeAfterFees && !calculationError && (
-        <div className="mt-4 bg-gray-700/50 border border-gray-600 rounded-lg p-3">
-          <h2 className="text-md font-semibold mb-2">Results</h2>
-          
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
-              <span className="text-gray-300 text-xs">Size Pre-Fees:</span>
-              <div className="flex items-center">
-                <span className="font-medium">{positionSizeBeforeFees}</span>
-                <button 
-                  onClick={() => copyToClipboard(positionSizeBeforeFees)}
-                  className="ml-1 text-gray-400 hover:text-white"
-                >
-                  <Copy size={12} />
-                </button>
-              </div>
-            </div>
-            
-            <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
-              <span className="text-gray-300 text-xs">Size Post-Fees:</span>
-              <div className="flex items-center">
-                <span className="font-medium">{positionSizeAfterFees}</span>
-                <button 
-                  onClick={() => copyToClipboard(positionSizeAfterFees)}
-                  className="ml-1 text-gray-400 hover:text-white"
-                >
-                  <Copy size={12} />
-                </button>
-              </div>
-            </div>
-            
-            <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
-              <span className="text-gray-300 text-xs">Leverage:</span>
-              <span className="font-medium">{leverageNeeded}x</span>
-            </div>
-            
-            <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
-              <span className="text-gray-300 text-xs">Total Fees:</span>
-              <span className="font-medium">{feeCost} USDT</span>
-            </div>
-            
-            <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
-              <span className="text-gray-300 text-xs">Max Risk:</span>
-              <div className="flex items-center">
-                <span className="font-medium">{maxRisk} USDT</span>
-                <button 
-                  onClick={() => copyToClipboard(maxRisk)}
-                  className="ml-1 text-gray-400 hover:text-white"
-                >
-                  <Copy size={12} />
-                </button>
-              </div>
-            </div>
-            
-            <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
-              <span className="text-gray-300 text-xs">Liquidation:</span>
-              <span className={`font-medium ${isLiquidationRisky ? 'text-red-400' : 'text-green-400'}`}>
-                {liquidationPrice}
-              </span>
-            </div>
-          </div>
-          
-          {isLiquidationRisky && (
-            <div className="mt-3 p-2 bg-red-900/50 border border-red-700 rounded-md text-red-200 text-xs">
-              Warning: Liquidation before stop loss!
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 };
