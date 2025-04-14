@@ -1,11 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Copy, Save, Plus } from 'lucide-react';
+import { Copy, Save, Plus, X, CheckCircle, AlertTriangle, RefreshCw } from 'lucide-react';
 import { JournalEntry } from './JournalEntry';
 
 interface CalculatorProps {
   livePrice: string;
   selectedCrypto: string;
   webhookUrl: string;
+}
+
+interface OpenTrade {
+  id: string;
+  symbol: string;
+  direction: string;
+  entryPrice: number;
+  stopLossPrice: number;
+  positionSize: number;
+  timestamp: string;
+  systemName: string;
 }
 
 export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypto, webhookUrl }) => {
@@ -41,11 +52,25 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
   const [existingEntryPrice, setExistingEntryPrice] = useState<string>('');
   const [existingRiskAmount, setExistingRiskAmount] = useState<string>('');
   const [remainingRiskAmount, setRemainingRiskAmount] = useState<string>('');
+  const [weightedAverageEntry, setWeightedAverageEntry] = useState<string>('');
+  const [totalPositionSize, setTotalPositionSize] = useState<string>('');
   
   // State for journal entry
   const [systemName, setSystemName] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
   const [entryPicUrl, setEntryPicUrl] = useState<string>('');
+  
+  // State for open trades
+  const [openTrades, setOpenTrades] = useState<OpenTrade[]>([]);
+  const [tradeClosingStatus, setTradeClosingStatus] = useState<{
+    loading: boolean;
+    tradeId: string | null;
+    error: string | null;
+  }>({
+    loading: false,
+    tradeId: null,
+    error: null
+  });
   
   // State for webhook success/error
   const [webhookStatus, setWebhookStatus] = useState<{
@@ -75,6 +100,12 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
       setIsLimitExit(settings.isLimitExit || false);
       setAvailableCapital(settings.availableCapital || '1000');
       setDecimalPlaces(settings.decimalPlaces || 2);
+    }
+    
+    // Load open trades from localStorage
+    const savedTrades = localStorage.getItem('openTrades');
+    if (savedTrades) {
+      setOpenTrades(JSON.parse(savedTrades));
     }
   }, []);
 
@@ -121,6 +152,11 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
     availableCapital,
     decimalPlaces,
   ]);
+  
+  // Save open trades to localStorage when they change
+  useEffect(() => {
+    localStorage.setItem('openTrades', JSON.stringify(openTrades));
+  }, [openTrades]);
 
   const handleMarketEntryChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setIsMarketEntry(e.target.checked);
@@ -273,6 +309,10 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
         setLiquidationPrice(liquidation.toFixed(2));
         setMaxRisk(maxRiskAfterFees.toFixed(decimalPlaces));
         setIsLiquidationRisky(willBeLiquidated);
+        
+        // Set weighted average entry (for consistency with compounding mode)
+        setWeightedAverageEntry(entry.toFixed(2));
+        setTotalPositionSize(positionSize.toFixed(decimalPlaces));
       } else {
         // Compounding calculation
         // Parse input values
@@ -307,33 +347,134 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
         // Determine if it's a long or short trade (based on new entry vs stop loss)
         const isLongTrade = newEntry < stopLoss;
         
-        // Calculate price difference for existing position
+        // Calculate total risk from existing position (based on new stop loss)
         const existingPriceDifference = Math.abs(existingEntry - stopLoss);
-        
-        // Calculate risk of existing position (including fees)
         const existingEntryFee = existingPosition * existingEntry * entryFeeRate;
         const existingExitFee = existingPosition * stopLoss * exitFeeRate;
         const existingFees = existingEntryFee + existingExitFee;
-        
         const existingRisk = (existingPosition * existingPriceDifference) + existingFees;
         
-        // Calculate remaining risk available for new position
-        const remainingRisk = Math.max(0, totalRisk - existingRisk);
+        // Calculate remaining risk for the new position
+        let remainingRisk = Math.max(0, totalRisk - existingRisk);
         
-        // Update state with remaining risk
-        setExistingRiskAmount(existingRisk.toFixed(2));
-        setRemainingRiskAmount(remainingRisk.toFixed(2));
+        // If the remaining risk is zero or negative, it means the existing position
+        // already uses all available risk or more. In this case, instead of showing an error,
+        // we'll calculate how much we can add without increasing total risk.
         
         if (remainingRisk <= 0) {
-          setCalculationError('No remaining risk available for new position');
-          setPositionSizeBeforeFees('0');
-          setPositionSizeAfterFees('0');
-          setLeverageNeeded('0');
-          setFeeCost('0');
-          setLiquidationPrice('0');
-          setMaxRisk('0');
-          setIsLiquidationRisky(false);
-          return;
+          // Calculate the new effective entry price (weighted average)
+          // This lets us know if we're adding to the position at a better price
+          // which could allow adding more size without increasing risk
+          
+          // Check if the new entry is better (from a risk perspective) than the existing entry
+          const isBetterEntry = (isLongTrade && newEntry > existingEntry) || 
+                               (!isLongTrade && newEntry < existingEntry);
+          
+          if (isBetterEntry) {
+            // We can add to the position at this better price,
+            // but we need to calculate how much we can add without exceeding the total risk
+            
+            // Calculate the price difference for the new position
+            const newPriceDifference = Math.abs(newEntry - stopLoss);
+            
+            // Calculate the weighted average entry if we add position
+            // Start with a small position size and increase iteratively
+            let additionalSize = 0;
+            let tempTotalSize = existingPosition;
+            let tempWeightedAvgEntry = existingEntry;
+            let tempTotalRisk = existingRisk;
+            
+            const sizeIncrement = Math.min(1, existingPosition / 10); // Start with 10% of existing
+            const maxIterations = 100;
+            
+            for (let i = 0; i < maxIterations; i++) {
+              // Increment position size
+              additionalSize += sizeIncrement;
+              tempTotalSize = existingPosition + additionalSize;
+              
+              // Calculate new weighted average entry
+              tempWeightedAvgEntry = ((existingPosition * existingEntry) + (additionalSize * newEntry)) / tempTotalSize;
+              
+              // Calculate price difference from weighted avg to stop loss
+              const avgToPriceDifference = Math.abs(tempWeightedAvgEntry - stopLoss);
+              
+              // Calculate fees
+              const newEntryFee = additionalSize * newEntry * entryFeeRate;
+              const totalExitFee = tempTotalSize * stopLoss * exitFeeRate;
+              const totalFees = existingEntryFee + newEntryFee + totalExitFee;
+              
+              // Calculate total risk
+              tempTotalRisk = (tempTotalSize * avgToPriceDifference) + totalFees;
+              
+              // If we exceed our risk tolerance, back up one step and break
+              if (tempTotalRisk > totalRisk) {
+                additionalSize -= sizeIncrement;
+                tempTotalSize = existingPosition + additionalSize;
+                tempWeightedAvgEntry = ((existingPosition * existingEntry) + (additionalSize * newEntry)) / tempTotalSize;
+                break;
+              }
+            }
+            
+            // If we can add at least a small amount
+            if (additionalSize > 0) {
+              // Calculate fees for this additional position
+              const additionalEntryFee = additionalSize * newEntry * entryFeeRate;
+              const totalExitFee = tempTotalSize * stopLoss * exitFeeRate;
+              const totalFees = existingEntryFee + additionalEntryFee + totalExitFee;
+              
+              // Calculate leverage based on total position
+              const leverage = (tempTotalSize * tempWeightedAvgEntry) / capital;
+              
+              // Liquidation price calculation
+              let liquidation;
+              if (isLongTrade) { // Long trade
+                liquidation = tempWeightedAvgEntry * (1 - (1 / leverage));
+              } else { // Short trade
+                liquidation = tempWeightedAvgEntry * (1 + (1 / leverage));
+              }
+              
+              // Check if liquidation happens before the stop loss
+              const willBeLiquidated = (isLongTrade && liquidation > stopLoss) ||
+                                       (!isLongTrade && liquidation < stopLoss);
+              
+              // Set results
+              setPositionSizeBeforeFees(additionalSize.toFixed(decimalPlaces));
+              setPositionSizeAfterFees(additionalSize.toFixed(decimalPlaces)); // Same since we already factored in fees
+              setLeverageNeeded(leverage.toFixed(2));
+              setFeeCost((additionalEntryFee + (totalExitFee - existingExitFee)).toFixed(2)); // Only additional fees
+              setLiquidationPrice(liquidation.toFixed(2));
+              setMaxRisk((totalRisk - tempTotalRisk).toFixed(decimalPlaces)); // Remaining risk
+              setIsLiquidationRisky(willBeLiquidated);
+              setRemainingRiskAmount('0'); // No remaining risk, we're using better entry to add size
+              setWeightedAverageEntry(tempWeightedAvgEntry.toFixed(2));
+              setTotalPositionSize(tempTotalSize.toFixed(decimalPlaces));
+              
+              setDebugInfo(`Better entry allows adding ${additionalSize.toFixed(decimalPlaces)} units without increasing risk.`);
+              return;
+            } else {
+              setCalculationError('Cannot add to position - already at maximum risk');
+              setPositionSizeBeforeFees('0');
+              setPositionSizeAfterFees('0');
+              setLeverageNeeded('0');
+              setFeeCost('0');
+              setLiquidationPrice('0');
+              setMaxRisk('0');
+              setIsLiquidationRisky(false);
+              setRemainingRiskAmount('0');
+              return;
+            }
+          } else {
+            setCalculationError('Cannot add to position - already at maximum risk and new entry is worse');
+            setPositionSizeBeforeFees('0');
+            setPositionSizeAfterFees('0');
+            setLeverageNeeded('0');
+            setFeeCost('0');
+            setLiquidationPrice('0');
+            setMaxRisk('0');
+            setIsLiquidationRisky(false);
+            setRemainingRiskAmount('0');
+            return;
+          }
         }
         
         // Calculate price difference for new position
@@ -377,10 +518,15 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
         const combinedPositionSize = existingPosition + positionSize;
         
         // Calculate weighted average entry price
-        const weightedAverageEntry = ((existingPosition * existingEntry) + (positionSize * newEntry)) / combinedPositionSize;
+        let weightedAverageEntryValue;
+        if (combinedPositionSize > 0) {
+          weightedAverageEntryValue = ((existingPosition * existingEntry) + (positionSize * newEntry)) / combinedPositionSize;
+        } else {
+          weightedAverageEntryValue = 0;
+        }
         
         // Calculate leverage needed based on combined position size and weighted average entry
-        const leverage = (combinedPositionSize * weightedAverageEntry) / capital;
+        const leverage = weightedAverageEntryValue > 0 ? (combinedPositionSize * weightedAverageEntryValue) / capital : 0;
         
         // Check for maximum leverage of 100
         if (leverage > 100) {
@@ -393,10 +539,10 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
         
         if (isLongTrade) { // Long trade
           // Liquidation price for long trades
-          liquidation = weightedAverageEntry * (1 - (1 / leverage));
+          liquidation = weightedAverageEntryValue * (1 - (1 / leverage));
         } else { // Short trade
           // Liquidation price for short trades
-          liquidation = weightedAverageEntry * (1 + (1 / leverage));
+          liquidation = weightedAverageEntryValue * (1 + (1 / leverage));
         }
         
         // Check if liquidation happens before the stop loss
@@ -411,9 +557,13 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
         setLiquidationPrice(liquidation.toFixed(2));
         setMaxRisk(maxRiskAfterFees.toFixed(decimalPlaces));
         setIsLiquidationRisky(willBeLiquidated);
+        setExistingRiskAmount(existingRisk.toFixed(2));
+        setRemainingRiskAmount(remainingRisk.toFixed(2));
+        setWeightedAverageEntry(weightedAverageEntryValue.toFixed(2));
+        setTotalPositionSize(combinedPositionSize.toFixed(decimalPlaces));
         
         // Add debug info for compounding
-        setDebugInfo(`Weighted Avg Entry: ${weightedAverageEntry.toFixed(2)}, Combined Position: ${combinedPositionSize.toFixed(decimalPlaces)}`);
+        setDebugInfo(`Weighted Avg Entry: ${weightedAverageEntryValue.toFixed(2)}, Combined Position: ${combinedPositionSize.toFixed(decimalPlaces)}`);
       }
     } catch (error) {
       setCalculationError(`Error: ${(error as Error).message}`);
@@ -465,16 +615,21 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
     
     // Determine if long or short
     const isLong = parseFloat(entryPrice) < parseFloat(stopLossPrice);
+    const direction = isLong ? 'LONG' : 'SHORT';
+    
+    // Generate a unique ID for the trade
+    const tradeId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     
     // Prepare data for webhook
     const tradeData = {
+      id: tradeId,
       symbol: selectedCrypto,
       entryPrice: parseFloat(entryPrice),
       stopLossPrice: parseFloat(stopLossPrice),
       positionSize: parseFloat(positionSizeAfterFees),
       riskAmount: parseFloat(riskAmount),
       leverage: parseFloat(leverageNeeded),
-      direction: isLong ? 'LONG' : 'SHORT',
+      direction: direction,
       feeCost: parseFloat(feeCost),
       liquidationPrice: parseFloat(liquidationPrice),
       timestamp: new Date().toISOString(),
@@ -489,10 +644,8 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
         existingEntryPrice: parseFloat(existingEntryPrice),
         existingRiskAmount: parseFloat(existingRiskAmount),
         remainingRiskAmount: parseFloat(remainingRiskAmount),
-        totalPositionSize: parseFloat(existingPositionSize) + parseFloat(positionSizeAfterFees),
-        weightedAverageEntry: ((parseFloat(existingPositionSize) * parseFloat(existingEntryPrice)) + 
-                              (parseFloat(positionSizeAfterFees) * parseFloat(entryPrice))) / 
-                              (parseFloat(existingPositionSize) + parseFloat(positionSizeAfterFees))
+        totalPositionSize: parseFloat(totalPositionSize),
+        weightedAverageEntry: parseFloat(weightedAverageEntry)
       }),
       // Add journal entry data
       notes: notes.trim(),
@@ -510,6 +663,20 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
       });
       
       if (response.ok) {
+        // Add trade to open trades list
+        const newOpenTrade: OpenTrade = {
+          id: tradeId,
+          symbol: selectedCrypto,
+          direction: direction,
+          entryPrice: parseFloat(entryPrice),
+          stopLossPrice: parseFloat(stopLossPrice),
+          positionSize: parseFloat(positionSizeAfterFees),
+          timestamp: new Date().toISOString(),
+          systemName: systemName.trim() || 'Unnamed Trade'
+        };
+        
+        setOpenTrades(prev => [...prev, newOpenTrade]);
+        
         setWebhookStatus({
           loading: false,
           success: true,
@@ -535,6 +702,70 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
       setWebhookStatus({
         loading: false,
         success: false,
+        error: `Error: ${(error as Error).message}`
+      });
+    }
+  };
+  
+  // Function to close a trade
+  const closeTrade = async (tradeId: string) => {
+    // Find the trade in our open trades
+    const trade = openTrades.find(t => t.id === tradeId);
+    if (!trade) {
+      console.error('Trade not found:', tradeId);
+      return;
+    }
+    
+    setTradeClosingStatus({
+      loading: true,
+      tradeId: tradeId,
+      error: null
+    });
+    
+    try {
+      // Prepare data for close webhook
+      const closeData = {
+        id: trade.id,
+        symbol: trade.symbol,
+        direction: trade.direction,
+        entryPrice: trade.entryPrice,
+        stopLossPrice: trade.stopLossPrice,
+        positionSize: trade.positionSize,
+        timestamp: trade.timestamp,
+        closeTimestamp: new Date().toISOString(),
+        systemName: trade.systemName
+      };
+      
+      // Send to close webhook
+      const response = await fetch('https://hook.eu2.make.com/huepvcula9eku5pko08rt7glz4zg5uck', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(closeData),
+      });
+      
+      if (response.ok) {
+        // Remove trade from open trades
+        setOpenTrades(prev => prev.filter(t => t.id !== tradeId));
+        
+        setTradeClosingStatus({
+          loading: false,
+          tradeId: null,
+          error: null
+        });
+      } else {
+        const errorText = await response.text();
+        setTradeClosingStatus({
+          loading: false,
+          tradeId: null,
+          error: `Error: ${response.status} - ${errorText}`
+        });
+      }
+    } catch (error) {
+      setTradeClosingStatus({
+        loading: false,
+        tradeId: null,
         error: `Error: ${(error as Error).message}`
       });
     }
@@ -855,9 +1086,9 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
                       <div className="flex justify-between items-center p-2 bg-purple-900/30 border border-purple-700/50 rounded-md">
                         <span className="text-purple-200 text-xs">Total Position Size:</span>
                         <div className="flex items-center">
-                          <span className="font-medium">{(parseFloat(existingPositionSize) + parseFloat(positionSizeAfterFees)).toFixed(decimalPlaces)}</span>
+                          <span className="font-medium">{totalPositionSize}</span>
                           <button 
-                            onClick={() => copyToClipboard((parseFloat(existingPositionSize) + parseFloat(positionSizeAfterFees)).toFixed(decimalPlaces))}
+                            onClick={() => copyToClipboard(totalPositionSize)}
                             className="ml-1 text-gray-400 hover:text-white"
                           >
                             <Copy size={12} />
@@ -885,11 +1116,13 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
                       <div className="flex justify-between items-center p-2 bg-gray-700 rounded-md">
                         <span className="text-gray-300 text-xs">Weighted Avg Entry:</span>
                         <div className="flex items-center">
-                          <span className="font-medium">
-                            {((parseFloat(existingPositionSize) * parseFloat(existingEntryPrice)) + 
-                              (parseFloat(positionSizeAfterFees) * parseFloat(entryPrice))) / 
-                              (parseFloat(existingPositionSize) + parseFloat(positionSizeAfterFees)).toFixed(2)}
-                          </span>
+                          <span className="font-medium">{weightedAverageEntry}</span>
+                          <button 
+                            onClick={() => copyToClipboard(weightedAverageEntry)}
+                            className="ml-1 text-gray-400 hover:text-white"
+                          >
+                            <Copy size={12} />
+                          </button>
                         </div>
                       </div>
                     )}
@@ -979,6 +1212,82 @@ export const Calculator: React.FC<CalculatorProps> = ({ livePrice, selectedCrypt
                 </>
               )}
             </button>
+            
+            {/* Open Trades Section */}
+            <div className="mt-4 bg-gray-700/50 border border-gray-600 rounded-lg p-3">
+              <h3 className="text-sm font-medium text-gray-300 mb-2 flex items-center justify-between">
+                <span>Open Trades</span>
+                {openTrades.length > 0 && (
+                  <span className="text-xs text-gray-400">{openTrades.length} trade{openTrades.length !== 1 ? 's' : ''}</span>
+                )}
+              </h3>
+              
+              {openTrades.length > 0 ? (
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {openTrades.map((trade) => {
+                    const isLong = trade.direction === 'LONG';
+                    const formattedTime = new Date(trade.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    const formattedDate = new Date(trade.timestamp).toLocaleDateString();
+                    
+                    return (
+                      <div key={trade.id} className="p-2 bg-gray-800 rounded-md">
+                        <div className="flex justify-between items-center mb-1">
+                          <div className="flex items-center">
+                            <span className={`text-xs font-medium ${isLong ? 'text-green-400' : 'text-red-400'}`}>
+                              {trade.symbol} {isLong ? '↑' : '↓'}
+                            </span>
+                          </div>
+                          <div className="flex items-center">
+                            <span className="text-xs text-gray-400 mr-2">{formattedTime} {formattedDate}</span>
+                            <button 
+                              onClick={() => closeTrade(trade.id)}
+                              disabled={tradeClosingStatus.loading && tradeClosingStatus.tradeId === trade.id}
+                              className={`text-xs px-2 py-0.5 ${
+                                tradeClosingStatus.loading && tradeClosingStatus.tradeId === trade.id
+                                  ? 'bg-gray-600 text-gray-400'
+                                  : 'bg-red-600 hover:bg-red-700 text-white'
+                              } rounded-md`}
+                            >
+                              {tradeClosingStatus.loading && tradeClosingStatus.tradeId === trade.id ? (
+                                <RefreshCw size={12} className="animate-spin" />
+                              ) : (
+                                'Close'
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-1 text-xs">
+                          <div>
+                            <span className="text-gray-400">Size:</span> <span>{trade.positionSize}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400">Entry:</span> <span>{trade.entryPrice}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400">Stop:</span> <span>{trade.stopLossPrice}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-400">System:</span> <span>{trade.systemName}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center text-gray-500 text-xs p-4">
+                  <p>No open trades</p>
+                  <p className="text-xs mt-1">Trades will appear here when you add them to your journal</p>
+                </div>
+              )}
+              
+              {tradeClosingStatus.error && (
+                <div className="mt-2 p-2 bg-red-900/50 border border-red-700 rounded-md text-red-200 text-xs">
+                  {tradeClosingStatus.error}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
