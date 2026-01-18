@@ -25,48 +25,96 @@ function App() {
   }, [favoriteCryptos]);
 
   const fetchPrice = async (symbol: string) => {
-    if (!useLivePrice) return;
-    
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      // Handle both spot and perpetual symbols
-      const category = symbol.endsWith('PERP') ? 'linear' : 'spot';
-      
-      // For perpetual symbols, we need to format them correctly for the API
-      const apiSymbol = symbol.endsWith('PERP') 
-        ? symbol.replace('PERP', '') 
-        : symbol;
-      
-      // Using the orderbook API endpoint from Bybit
-      const response = await fetch(`https://api.bybit.com/v5/market/orderbook?category=${category}&symbol=${apiSymbol}&limit=1`);
-      const data = await response.json();
-      
-      if (data.retCode === 0 && data.result && data.result.a && data.result.a.length > 0) {
-        // Using the "a" (ask) price as the execution price as it's more accurate for entries
-        setLivePrice(data.result.a[0][0]);
-      } else {
-        setError('Failed to fetch price data');
+  if (!useLivePrice) return;
+
+  setIsLoading(true);
+  setError(null);
+
+  try {
+    // ================================
+    // BLOFIN PERP
+    // ================================
+    if (symbol === 'BTCUSDTPERP_BLOFIN') {
+      const instId = 'BTC-USDT';
+
+      const response = await fetch(`/.netlify/functions/blofin-price?instId=${instId}`);
+
+      if (!response.ok) {
+        throw new Error(`Blofin proxy failed: ${response.status}`);
       }
-    } catch (err) {
-      setError('Error connecting to Bybit API');
-      console.error(err);
-    } finally {
-      setIsLoading(false);
+
+      const data = await response.json();
+
+      if (data.code === '0' && data.data && data.data.length > 0) {
+        const t = data.data[0];
+
+        const price =
+          t.askPrice ||
+          t.askPx ||
+          t.last ||
+          t.markPx ||
+          t.bidPrice ||
+          t.bidPx;
+
+        if (!price) {
+          throw new Error('No usable price field in Blofin response');
+        }
+
+        setLivePrice(price.toString());
+      } else {
+        throw new Error(data.msg || 'Invalid Blofin response');
+      }
+
+      return;
     }
-  };
+
+    // ================================
+    // BYBIT
+    // ================================
+    const category = symbol.endsWith('PERP') ? 'linear' : 'spot';
+
+    const apiSymbol = symbol.endsWith('PERP')
+      ? symbol.replace('PERP', '')
+      : symbol;
+
+    const response = await fetch(
+      `/bybit-api/v5/market/orderbook?category=${category}&symbol=${apiSymbol}&limit=1`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Bybit API request failed: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (
+      data.retCode === 0 &&
+      data.result &&
+      data.result.a &&
+      data.result.a.length > 0
+    ) {
+      setLivePrice(data.result.a[0][0]);
+    } else {
+      throw new Error('Invalid Bybit response');
+    }
+  } catch (err: any) {
+    console.error(err);
+    setError(err.message || 'Error connecting to exchange');
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   useEffect(() => {
     // Initial fetch
     fetchPrice(selectedCrypto);
     
-    // Set up interval to refresh price every 1 second
+    // Set up interval to refresh price every 5 seconds to avoid rate limiting
     const interval = setInterval(() => {
       if (useLivePrice) {
         fetchPrice(selectedCrypto);
       }
-    }, 1000);
+    }, 5000);
     
     return () => clearInterval(interval);
   }, [selectedCrypto, useLivePrice]);
@@ -106,6 +154,7 @@ function App() {
     if (symbol === 'DOTUSDT') return 'DOT';
     // Perpetual markets
     if (symbol === 'BTCUSDTPERP') return 'BTC/P';
+    if (symbol === 'BTCUSDTPERP_BLOFIN') return 'BTC/B';
     if (symbol === 'ETHUSDTPERP') return 'ETH/P';
     if (symbol === 'SOLUSDTPERP') return 'SOL/P';
     
@@ -124,7 +173,7 @@ function App() {
           <p className="text-gray-400 text-sm">Calculate position sizes with fee considerations</p>
         </header>
         
-        <div className="bg-gray-800 rounded-lg shadow-lg p-4 max-w-2xl mx-auto">
+        <div className="bg-gray-800 rounded-lg shadow-lg p-4 max-w-6xl mx-auto">
           {/* Favorite Cryptos Quick Buttons */}
           {favoriteCryptos.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-4 border-b border-gray-700 pb-3">
@@ -186,7 +235,6 @@ function App() {
           <Calculator 
             livePrice={useLivePrice ? livePrice : ''} 
             selectedCrypto={selectedCrypto}
-            webhookUrl="https://hook.eu2.make.com/9hd3b1rhn57p84u6a78cgyr993b5pl8u"
           />
         </div>
       </div>
