@@ -1,0 +1,4 @@
+[build]
+functions = "netlify/functions"
+command = "npx vite build"
+publish = "dist"
